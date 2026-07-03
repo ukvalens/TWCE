@@ -1,6 +1,7 @@
 const { query } = require('../config/db');
 const { paginate } = require('../utils/helpers');
 const { notify } = require('./communicationController');
+const pesapal = require('../utils/pesapal');
 
 const getPaymentMethods = async (req, res, next) => {
   try {
@@ -144,7 +145,7 @@ const getVendorPayments = async (req, res, next) => {
       `SELECT DISTINCT p.payment_id, p.order_id, p.amount, p.status, p.paid_at, p.method_id,
               pm.method_name, o.total_amount, o.created_at AS order_date,
               u.full_name AS customer_name, u.email AS customer_email,
-              i.invoice_number, t.transaction_ref
+              i.invoice_number, t.transaction_ref, p.payment_proof
        FROM payments p
        JOIN orders o ON p.order_id=o.order_id
        JOIN order_items oi ON oi.order_id=o.order_id
@@ -153,6 +154,7 @@ const getVendorPayments = async (req, res, next) => {
        JOIN payment_methods pm ON p.method_id=pm.method_id
        LEFT JOIN invoices i ON i.order_id=o.order_id
        LEFT JOIN transactions t ON t.payment_id=p.payment_id AND t.status='completed'
+       LEFT JOIN payments pay_inner ON pay_inner.payment_id=p.payment_id
        ORDER BY p.paid_at DESC NULLS LAST LIMIT $2 OFFSET $3`,
       [vendorId, limit, offset]
     );
@@ -179,7 +181,7 @@ const getAllPayments = async (req, res, next) => {
     params.push(limit, offset);
 
     const result = await query(
-      `SELECT p.*, pm.method_name, u.full_name, u.email, i.invoice_number, t.transaction_ref
+      `SELECT p.*, pm.method_name, u.full_name, u.email, i.invoice_number, t.transaction_ref, p.payment_proof
        FROM payments p
        JOIN payment_methods pm ON p.method_id=pm.method_id
        JOIN orders o ON p.order_id=o.order_id
@@ -247,16 +249,31 @@ const refundPayment = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const rejectPayment = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const payment = await query('SELECT * FROM payments WHERE payment_id=$1', [id]);
+    if (!payment.rows.length) return res.status(404).json({ message: 'Payment not found' });
+    if (payment.rows[0].status !== 'pending') return res.status(400).json({ message: 'Only pending payments can be rejected' });
+    await query('UPDATE payments SET payment_proof=NULL WHERE payment_id=$1', [id]);
+    const order = await query('SELECT user_id FROM orders WHERE order_id=$1', [payment.rows[0].order_id]);
+    if (order.rows.length) notify(order.rows[0].user_id, 'Payment Proof Rejected',
+      reason || 'Your payment screenshot was rejected. Please upload a valid proof.', 'payment');
+    res.json({ message: 'Payment proof rejected' });
+  } catch (err) { next(err); }
+};
+
 const markPaymentCompleted = async (req, res, next) => {
   try {
     const { id } = req.params;
     const payment = await query('SELECT * FROM payments WHERE payment_id=$1', [id]);
     if (!payment.rows.length) return res.status(404).json({ message: 'Payment not found' });
-    if (payment.rows[0].status === 'completed') return res.status(400).json({ message: 'Already completed' });
+    if (payment.rows[0].status !== 'pending') return res.status(400).json({ message: 'Only pending payments can be approved' });
     await query("UPDATE payments SET status='completed', paid_at=NOW() WHERE payment_id=$1", [id]);
     await query("UPDATE orders SET payment_status='paid', status='confirmed', updated_at=NOW() WHERE order_id=$1", [payment.rows[0].order_id]);
     const order = await query('SELECT user_id FROM orders WHERE order_id=$1', [payment.rows[0].order_id]);
-    if (order.rows.length) notify(order.rows[0].user_id, 'Payment Confirmed', `Your payment has been confirmed by admin.`, 'payment');
+    if (order.rows.length) notify(order.rows[0].user_id, 'Payment Confirmed', 'Your payment has been confirmed. Your order is now being processed.', 'payment');
     res.json({ message: 'Payment marked as completed' });
   } catch (err) { next(err); }
 };
@@ -273,4 +290,176 @@ const deletePayment = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getPaymentMethods, initiatePayment, verifyPayment, getPaymentHistory, getPaymentSlip, getVendorPayments, getAllPayments, getRevenueStats, refundPayment, markPaymentCompleted, deletePayment };
+const uploadPaymentProof = async (req, res, next) => {
+  try {
+    const { payment_id } = req.body;
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    const filePath = req.file.filename;
+    await query('UPDATE payments SET payment_proof=$1 WHERE payment_id=$2', [filePath, payment_id]);
+    // Notify vendors of this order
+    const payRow = await query('SELECT order_id FROM payments WHERE payment_id=$1', [payment_id]);
+    if (payRow.rows.length) {
+      const vendorItems = await query(
+        `SELECT DISTINCT v.user_id AS vendor_user_id, u.full_name AS customer_name
+         FROM order_items oi
+         JOIN products p ON oi.product_id=p.product_id
+         JOIN vendors v ON p.vendor_id=v.vendor_id
+         JOIN orders o ON oi.order_id=o.order_id
+         JOIN users u ON o.user_id=u.user_id
+         WHERE oi.order_id=$1`, [payRow.rows[0].order_id]
+      );
+      for (const row of vendorItems.rows) {
+        notify(row.vendor_user_id, 'Payment Proof Uploaded', `${row.customer_name} uploaded payment proof. Please verify.`, 'payment');
+      }
+    }
+    res.json({ message: 'Payment proof uploaded', file: filePath });
+  } catch (err) { next(err); }
+};
+
+// ─── Pesapal ──────────────────────────────────────────────
+const pesapalInitiate = async (req, res, next) => {
+  try {
+    const { order_id, method_id } = req.body;
+    const order = await query('SELECT * FROM orders WHERE order_id=$1 AND user_id=$2', [order_id, req.user.user_id]);
+    if (!order.rows.length) return res.status(404).json({ message: 'Order not found' });
+    if (order.rows[0].payment_status === 'paid') return res.status(400).json({ message: 'Order already paid' });
+
+    const amount = parseFloat(order.rows[0].total_amount);
+    const amountUSD = parseFloat((amount / 1400).toFixed(2)); // Convert RWF to USD
+
+    // Upsert payment record
+    let payment;
+    const existing = await query("SELECT * FROM payments WHERE order_id=$1 AND status='pending'", [order_id]);
+    if (existing.rows.length) {
+      payment = existing.rows[0];
+      await query('UPDATE payments SET method_id=$1 WHERE payment_id=$2', [method_id, payment.payment_id]);
+    } else {
+      const ins = await query(
+        'INSERT INTO payments (order_id, amount, method_id) VALUES ($1,$2,$3) RETURNING *',
+        [order_id, amount, method_id]
+      );
+      payment = ins.rows[0];
+    }
+
+    // Get user info
+    const userRow = await query('SELECT full_name, email, phone FROM users WHERE user_id=$1', [req.user.user_id]);
+    const user = userRow.rows[0];
+    const [firstName, ...rest] = (user.full_name || 'Customer').split(' ');
+
+    const ipnId = process.env.PESAPAL_IPN_ID;
+    const callbackUrl = `${process.env.CLIENT_URL}/payment/callback`;
+
+    const pesapalRes = await pesapal.submitOrder({
+      orderId: `${payment.payment_id}-${Date.now()}`,
+      amount: amountUSD,
+      currency: 'USD',
+      description: `Order ${order_id.slice(0, 8)}`,
+      email: user.email,
+      phone: user.phone || '',
+      firstName,
+      lastName: rest.join(' ') || '-',
+      callbackUrl,
+      ipnId,
+    });
+
+    const trackingId = pesapalRes.order_tracking_id;
+    if (!trackingId || pesapalRes.error) {
+      console.error('Pesapal response missing tracking_id:', pesapalRes);
+      const errMsg = pesapalRes.error?.message || 'Pesapal did not return a tracking ID';
+      return res.status(502).json({ message: errMsg });
+    }
+    await query(
+      'INSERT INTO transactions (payment_id, transaction_ref, status, gateway_response) VALUES ($1,$2,$3,$4)',
+      [payment.payment_id, trackingId, 'pending', JSON.stringify(pesapalRes)]
+    );
+
+    res.json({ redirect_url: pesapalRes.redirect_url, tracking_id: trackingId, payment_id: payment.payment_id });
+  } catch (err) { next(err); }
+};
+
+const pesapalCallback = async (req, res, next) => {
+  try {
+    const { OrderTrackingId, OrderMerchantReference } = req.query;
+    if (!OrderTrackingId) return res.redirect(`${process.env.CLIENT_URL}/dashboard/payments?status=error`);
+
+    const data = await pesapal.getTransactionStatus(OrderTrackingId);
+    const statusDesc = (data.payment_status_description || '').toLowerCase();
+
+    const txn = await query(
+      'SELECT t.*, p.order_id, p.payment_id, p.amount FROM transactions t JOIN payments p ON t.payment_id=p.payment_id WHERE t.transaction_ref=$1',
+      [OrderTrackingId]
+    );
+
+    if (txn.rows.length && (statusDesc === 'completed' || statusDesc === 'paid')) {
+      await query('UPDATE transactions SET status=$1, gateway_response=$2 WHERE transaction_ref=$3',
+        ['completed', JSON.stringify(data), OrderTrackingId]);
+      await query("UPDATE payments SET status='completed', paid_at=NOW() WHERE payment_id=$1", [txn.rows[0].payment_id]);
+      await query("UPDATE orders SET payment_status='paid', status='confirmed', updated_at=NOW() WHERE order_id=$1", [txn.rows[0].order_id]);
+      const orderRow = await query('SELECT user_id FROM orders WHERE order_id=$1', [txn.rows[0].order_id]);
+      if (orderRow.rows.length) notify(orderRow.rows[0].user_id, 'Payment Confirmed', `Your payment of ${txn.rows[0].amount} was successful!`, 'payment');
+    }
+
+    res.redirect(`${process.env.CLIENT_URL}/dashboard/payments?status=${statusDesc}`);
+  } catch (err) { next(err); }
+};
+
+const pesapalIPN = async (req, res, next) => {
+  try {
+    const { OrderTrackingId, OrderNotificationType } = req.body;
+    if (!OrderTrackingId) return res.json({ status: '200' });
+
+    const data = await pesapal.getTransactionStatus(OrderTrackingId);
+    const statusDesc = (data.payment_status_description || '').toLowerCase();
+
+    const txn = await query(
+      'SELECT t.*, p.order_id, p.payment_id, p.amount FROM transactions t JOIN payments p ON t.payment_id=p.payment_id WHERE t.transaction_ref=$1',
+      [OrderTrackingId]
+    );
+
+    if (txn.rows.length) {
+      if (statusDesc === 'completed' || statusDesc === 'paid') {
+        await query('UPDATE transactions SET status=$1, gateway_response=$2 WHERE transaction_ref=$3',
+          ['completed', JSON.stringify(data), OrderTrackingId]);
+        await query("UPDATE payments SET status='completed', paid_at=NOW() WHERE payment_id=$1", [txn.rows[0].payment_id]);
+        await query("UPDATE orders SET payment_status='paid', status='confirmed', updated_at=NOW() WHERE order_id=$1", [txn.rows[0].order_id]);
+        const orderRow = await query('SELECT user_id FROM orders WHERE order_id=$1', [txn.rows[0].order_id]);
+        if (orderRow.rows.length) notify(orderRow.rows[0].user_id, 'Payment Confirmed', `Your payment of ${txn.rows[0].amount} was successful!`, 'payment');
+      } else if (statusDesc === 'failed') {
+        await query('UPDATE transactions SET status=$1 WHERE transaction_ref=$2', ['failed', OrderTrackingId]);
+      }
+    }
+    res.json({ status: '200' });
+  } catch (err) { next(err); }
+};
+
+const pesapalStatus = async (req, res, next) => {
+  try {
+    const { tracking_id } = req.body;
+    if (!tracking_id) return res.status(400).json({ message: 'tracking_id required' });
+    const data = await pesapal.getTransactionStatus(tracking_id);
+    const statusDesc = (data.payment_status_description || '').toLowerCase();
+
+    const txn = await query(
+      'SELECT t.*, p.order_id, p.payment_id, p.amount FROM transactions t JOIN payments p ON t.payment_id=p.payment_id WHERE t.transaction_ref=$1',
+      [tracking_id]
+    );
+    if (!txn.rows.length) return res.status(404).json({ message: 'Transaction not found' });
+
+    if (statusDesc === 'completed' || statusDesc === 'paid') {
+      await query('UPDATE transactions SET status=$1, gateway_response=$2 WHERE transaction_ref=$3',
+        ['completed', JSON.stringify(data), tracking_id]);
+      await query("UPDATE payments SET status='completed', paid_at=NOW() WHERE payment_id=$1", [txn.rows[0].payment_id]);
+      await query("UPDATE orders SET payment_status='paid', status='confirmed', updated_at=NOW() WHERE order_id=$1", [txn.rows[0].order_id]);
+      const orderRow = await query('SELECT user_id FROM orders WHERE order_id=$1', [txn.rows[0].order_id]);
+      if (orderRow.rows.length) notify(orderRow.rows[0].user_id, 'Payment Confirmed', `Your payment of ${txn.rows[0].amount} was successful!`, 'payment');
+      return res.json({ status: 'completed', message: 'Payment confirmed!' });
+    }
+    if (statusDesc === 'failed') {
+      await query('UPDATE transactions SET status=$1 WHERE transaction_ref=$2', ['failed', tracking_id]);
+      return res.json({ status: 'failed', message: 'Payment failed' });
+    }
+    res.json({ status: 'pending', message: 'Payment still pending' });
+  } catch (err) { next(err); }
+};
+
+module.exports = { getPaymentMethods, initiatePayment, verifyPayment, getPaymentHistory, getPaymentSlip, getVendorPayments, getAllPayments, getRevenueStats, refundPayment, markPaymentCompleted, rejectPayment, deletePayment, uploadPaymentProof, pesapalInitiate, pesapalCallback, pesapalIPN, pesapalStatus };

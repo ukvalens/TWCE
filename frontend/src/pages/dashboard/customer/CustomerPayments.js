@@ -8,12 +8,74 @@ import { formatPrice, formatDate, statusBadge } from '../../../utils/helpers';
 import PaymentSlipModal from '../PaymentSlipModal';
 import toast from 'react-hot-toast';
 
+/* --- USSD / Bank info per method ------------------------------------------ */
+const getPaymentInfo = (methodName, amount) => {
+  const amt = Math.round(amount);
+  const name = (methodName || '').toLowerCase();
+  if (name.includes('mtn') || (name.includes('mobile') && !name.includes('airtel'))) {
+    return {
+      type: 'ussd',
+      title: 'MTN Mobile Money',
+      code: `*182*8*1*522467*${amt}#`,
+      steps: [
+        `Dial  *182*8*1*522467*${amt}#  on your MTN line`,
+        'Enter your MoMo PIN to confirm',
+        'Take a screenshot of the confirmation SMS',
+        'Upload the screenshot below',
+      ],
+    };
+  }
+  if (name.includes('airtel')) {
+    return {
+      type: 'ussd',
+      title: 'Airtel Money',
+      code: `*185*8*1*522467*${amt}#`,
+      steps: [
+        `Dial  *185*8*1*522467*${amt}#  on your Airtel line`,
+        'Enter your Airtel Money PIN to confirm',
+        'Take a screenshot of the confirmation SMS',
+        'Upload the screenshot below',
+      ],
+    };
+  }
+  if (name.includes('bank')) {
+    return {
+      type: 'bank',
+      title: 'Bank Transfer',
+      steps: [
+        'Transfer to: Bank of Kigali',
+        'Account Name: TWCE Ltd',
+        'Account No: 00040-06178600-18',
+        `Amount: RWF ${amt.toLocaleString()}`,
+        'Take a screenshot / photo of the transfer receipt',
+        'Upload the screenshot below',
+      ],
+    };
+  }
+  // Generic mobile money fallback
+  return {
+    type: 'ussd',
+    title: 'Mobile Money',
+    code: `*182*8*1*522467*${amt}#`,
+    steps: [
+      `Dial  *182*8*1*522467*${amt}#`,
+      'Confirm with your PIN',
+      'Take a screenshot of the confirmation',
+      'Upload the screenshot below',
+    ],
+  };
+};
+
 /* --- Pay Now Modal --------------------------------------------------------- */
 const PayNowModal = ({ order, onClose, onSuccess }) => {
-  const [methods,  setMethods]  = useState([]);
-  const [methodId, setMethodId] = useState('');
-  const [loading,  setLoading]  = useState(true);
-  const [paying,   setPaying]   = useState(false);
+  const [methods,   setMethods]  = useState([]);
+  const [methodId,  setMethodId] = useState('');
+  const [loading,   setLoading]  = useState(true);
+  const [step,      setStep]     = useState('select'); // select | instructions | upload
+  const [paymentId, setPaymentId]= useState(null);
+  const [proof,     setProof]    = useState(null);
+  const [uploading, setUploading]= useState(false);
+  const fileRef = useState(null);
 
   useEffect(() => {
     api.get('/payments/methods')
@@ -25,38 +87,60 @@ const PayNowModal = ({ order, onClose, onSuccess }) => {
       .finally(() => setLoading(false));
   }, []);
 
-  const handlePay = async (e) => {
+  const selectedMethod = methods.find(m => m.method_id?.toString() === methodId);
+  const info = selectedMethod ? getPaymentInfo(selectedMethod.method_name, order.total_amount) : null;
+
+  // Step 1: initiate payment record and show instructions
+  const handleContinue = async (e) => {
     e.preventDefault();
     if (!methodId) return toast.error('Select a payment method');
-    setPaying(true);
     try {
       const initRes = await api.post('/payments/initiate', {
         order_id: order.order_id,
         method_id: parseInt(methodId),
       });
-      const { transaction_ref } = initRes.data;
-      await api.post('/payments/verify', { transaction_ref });
-      toast.success('Payment successful! Order confirmed.');
+      setPaymentId(initRes.data.payment.payment_id);
+      setStep('instructions');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to initiate payment');
+    }
+  };
+
+  // Step 2: upload screenshot
+  const handleUpload = async () => {
+    if (!proof) return toast.error('Please select a screenshot to upload');
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('proof', proof);
+      fd.append('payment_id', paymentId);
+      await api.post('/payments/upload-proof', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('Payment proof submitted! Vendor will verify shortly.');
       onSuccess();
       onClose();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Payment failed');
-    } finally { setPaying(false); }
+      toast.error(err.response?.data?.message || 'Upload failed');
+    } finally { setUploading(false); }
   };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-box" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+      <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <CreditCard size={18} /> Complete Payment
+            <CreditCard size={18} />
+            {step === 'select' ? 'Complete Payment' : step === 'instructions' ? 'Payment Instructions' : 'Upload Proof'}
           </h3>
           <button className="modal-close" onClick={onClose}><X size={18} /></button>
         </div>
+
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" /></div>
-        ) : (
-          <form onSubmit={handlePay} className="modal-form">
+        ) : step === 'select' ? (
+          <form onSubmit={handleContinue} className="modal-form">
+            {/* Order summary */}
             <div style={{ background: '#f8f9fa', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Invoice</span>
@@ -67,7 +151,6 @@ const PayNowModal = ({ order, onClose, onSuccess }) => {
                 <span style={{ color: 'var(--primary)' }}>{formatPrice(order.total_amount)}</span>
               </div>
             </div>
-
             <div className="form-group">
               <label className="form-label">Payment Method *</label>
               <select className="form-control" value={methodId} onChange={e => setMethodId(e.target.value)} required>
@@ -77,19 +160,93 @@ const PayNowModal = ({ order, onClose, onSuccess }) => {
                 ))}
               </select>
             </div>
-
-            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#92400e', marginBottom: 4 }}>
-              <AlertCircle size={13} style={{ verticalAlign: 'middle', marginRight: 5 }} />
-              Payment will be processed and your order will be confirmed immediately.
-            </div>
-
             <div className="modal-footer">
               <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={paying || !methodId}>
-                {paying ? 'Processing…' : `Pay ${formatPrice(order.total_amount)}`}
-              </button>
+              <button type="submit" className="btn btn-primary" disabled={!methodId}>Continue</button>
             </div>
           </form>
+
+        ) : step === 'instructions' ? (
+          <div className="modal-form">
+            {/* USSD code box */}
+            {info?.code && (
+              <div style={{
+                background: '#0077B6', color: '#fff', borderRadius: 10,
+                padding: '16px 20px', textAlign: 'center', marginBottom: 20,
+              }}>
+                <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 6 }}>Dial this USSD code</div>
+                <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: 1, fontFamily: 'monospace' }}>
+                  {info.code}
+                </div>
+                <button
+                  type="button"
+                  style={{ marginTop: 10, background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 14px', cursor: 'pointer', fontSize: 12 }}
+                  onClick={() => { navigator.clipboard.writeText(info.code); toast.success('Copied!'); }}
+                >
+                  Copy
+                </button>
+              </div>
+            )}
+            {/* Steps */}
+            <ol style={{ paddingLeft: 20, margin: '0 0 20px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {info?.steps.map((s, i) => (
+                <li key={i} style={{ fontSize: 13, color: i === 0 ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: i === 0 ? 600 : 400 }}>{s}</li>
+              ))}
+            </ol>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline" onClick={() => setStep('select')}>Back</button>
+              <button type="button" className="btn btn-primary" onClick={() => setStep('upload')}>I've Paid — Upload Proof</button>
+            </div>
+          </div>
+
+        ) : (
+          <div className="modal-form">
+            <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+              Upload a screenshot or photo of your payment confirmation.
+            </p>
+            <div
+              style={{
+                border: '2px dashed var(--border-color, #e5e7eb)', borderRadius: 10,
+                padding: '30px 20px', textAlign: 'center', cursor: 'pointer',
+                background: proof ? '#f0fdf4' : '#fafafa',
+              }}
+              onClick={() => document.getElementById('proof-input').click()}
+            >
+              {proof ? (
+                <>
+                  <CheckCircle size={32} color="#2A9D8F" style={{ marginBottom: 8 }} />
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{proof.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{(proof.size / 1024).toFixed(1)} KB</div>
+                </>
+              ) : (
+                <>
+                  <DollarSign size={32} style={{ opacity: 0.3, marginBottom: 8 }} />
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Click to select screenshot</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>JPG, PNG up to 5MB</div>
+                </>
+              )}
+            </div>
+            <input
+              id="proof-input"
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={e => setProof(e.target.files[0] || null)}
+            />
+            {proof && (
+              <img
+                src={URL.createObjectURL(proof)}
+                alt="preview"
+                style={{ width: '100%', borderRadius: 8, marginTop: 12, maxHeight: 200, objectFit: 'contain', border: '1px solid var(--border-color)' }}
+              />
+            )}
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline" onClick={() => setStep('instructions')}>Back</button>
+              <button type="button" className="btn btn-primary" disabled={!proof || uploading} onClick={handleUpload}>
+                {uploading ? 'Uploading…' : 'Submit Proof'}
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

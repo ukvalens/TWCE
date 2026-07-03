@@ -293,7 +293,7 @@ const getVendorOrderItems = async (req, res, next) => {
     const order = await query(
       `SELECT o.*, u.full_name, u.email, u.phone,
               i.invoice_number,
-              pay.status AS pay_status, pay.payment_id, pay.paid_at, pay.amount AS pay_amount,
+              pay.status AS pay_status, pay.payment_id, pay.paid_at, pay.amount AS pay_amount, pay.payment_proof,
               pm.method_name,
               a.street, a.city, a.country
        FROM orders o

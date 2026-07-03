@@ -1,13 +1,107 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   Search, DollarSign, CheckCircle, XCircle, Clock,
-  TrendingUp, Eye, RefreshCw, BarChart2,
+  TrendingUp, Eye, RefreshCw, BarChart2, Image, X,
 } from 'lucide-react';
 import api from '../../../utils/api';
 import { formatPrice, formatDate, statusBadge } from '../../../utils/helpers';
 import { Pagination } from './AdminUsers';
 import PaymentSlipModal from '../PaymentSlipModal';
 import toast from 'react-hot-toast';
+
+const UPLOADS = 'http://localhost:5000/uploads/';
+
+/* --- Proof Modal ----------------------------------------------------------- */
+const ProofModal = ({ payment, onClose, onApprove }) => {
+  const [approving, setApproving] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [showReject, setShowReject] = useState(false);
+  const [reason, setReason] = useState('');
+  const name = payment.full_name || payment.customer_name;
+  const handleApprove = async () => {
+    setApproving(true);
+    try {
+      await api.put(`/payments/${payment.payment_id}/complete`);
+      toast.success('Payment approved!');
+      onApprove(); onClose();
+    } catch (err) { toast.error(err.response?.data?.message || 'Failed'); }
+    finally { setApproving(false); }
+  };
+  const handleReject = async () => {
+    setRejecting(true);
+    try {
+      await api.put(`/payments/${payment.payment_id}/reject`, { reason });
+      toast.success('Payment proof rejected. Customer notified.');
+      onApprove(); onClose();
+    } catch (err) { toast.error(err.response?.data?.message || 'Failed'); }
+    finally { setRejecting(false); }
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Image size={18} /> Payment Proof</h3>
+          <button className="modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div style={{ padding: '0 24px 20px' }}>
+          <div style={{ background: '#f8f9fa', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Customer</span><strong>{name}</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Amount</span>
+              <strong style={{ color: 'var(--primary)' }}>{formatPrice(payment.amount)}</strong>
+            </div>
+          </div>
+          {payment.payment_proof ? (
+            <img src={`${UPLOADS}${payment.payment_proof}`} alt="proof"
+              style={{ width: '100%', borderRadius: 10, border: '1px solid var(--border-color)', maxHeight: 340, objectFit: 'contain', cursor: 'zoom-in' }}
+              onClick={() => window.open(`${UPLOADS}${payment.payment_proof}`, '_blank')} />
+          ) : (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
+              <Image size={40} style={{ opacity: 0.2, marginBottom: 8 }} /><p>No proof uploaded</p>
+            </div>
+          )}
+          {showReject && (
+            <div style={{ marginTop: 14 }}>
+              <label className="form-label">Rejection Reason (sent to customer)</label>
+              <textarea className="form-control" rows={3}
+                placeholder="e.g. Screenshot is blurry, wrong amount, wrong account..."
+                value={reason} onChange={e => setReason(e.target.value)} />
+            </div>
+          )}
+          {payment.status === 'pending' && payment.payment_proof ? (
+            <div className="modal-footer" style={{ marginTop: 16 }}>
+              <button className="btn btn-outline" onClick={onClose}>Close</button>
+              {!showReject ? (
+                <>
+                  <button className="btn btn-sm" style={{ background: '#fde8ea', color: '#e63946', border: '1px solid #fca5a5' }}
+                    onClick={() => setShowReject(true)}>Reject</button>
+                  <button className="btn btn-primary" disabled={approving} onClick={handleApprove}
+                    style={{ background: '#2A9D8F', borderColor: '#2A9D8F' }}>
+                    <CheckCircle size={14} /> {approving ? 'Approving…' : 'Approve Payment'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="btn btn-outline" onClick={() => setShowReject(false)}>Cancel</button>
+                  <button className="btn btn-sm" style={{ background: '#e63946', color: '#fff', border: 'none' }}
+                    disabled={rejecting} onClick={handleReject}>
+                    {rejecting ? 'Rejecting…' : 'Confirm Reject'}
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="modal-footer" style={{ marginTop: 16 }}>
+              <button className="btn btn-outline" onClick={onClose}>Close</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 /* --- Mini bar for payment-method breakdown --------------------------------- */
 const MethodBar = ({ method_name, revenue, count, maxRevenue }) => {
@@ -41,6 +135,7 @@ const AdminPayments = () => {
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsTab,     setStatsTab]     = useState('overview');
   const [slipId,       setSlipId]       = useState(null);
+  const [proofPayment, setProofPayment]  = useState(null);
 
   /* load list */
   const load = useCallback(async () => {
@@ -286,7 +381,7 @@ const AdminPayments = () => {
               <thead>
                 <tr>
                   <th>Payment ID</th><th>Customer</th><th>Amount</th><th>Method</th>
-                  <th>Status</th><th>Ref #</th><th>Paid At</th><th>Actions</th>
+                  <th>Status</th><th>Proof</th><th>Ref #</th><th>Paid At</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -306,6 +401,13 @@ const AdminPayments = () => {
                     <td><strong style={{ fontSize: 15 }}>{formatPrice(p.amount)}</strong></td>
                     <td style={{ fontSize: 13 }}>{p.method_name || '—'}</td>
                     <td><span className={`badge badge-${statusBadge(p.status)}`}>{p.status}</span></td>
+                    <td>
+                      {p.payment_proof ? (
+                        <img src={`http://localhost:5000/uploads/${p.payment_proof}`} alt="proof"
+                          style={{ width: 38, height: 38, objectFit: 'cover', borderRadius: 6, cursor: 'pointer', border: '2px solid #2A9D8F' }}
+                          onClick={() => setProofPayment(p)} title="View proof" />
+                      ) : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>}
+                    </td>
                     <td><code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{p.transaction_ref ? p.transaction_ref.slice(0, 16) + '…' : '—'}</code></td>
                     <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{p.paid_at ? formatDate(p.paid_at) : '—'}</td>
                     <td>
@@ -321,7 +423,13 @@ const AdminPayments = () => {
                             </button>
                           </>
                         )}
-                        {p.status === 'pending'  && <span style={{ fontSize: 11, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: 4 }}><Clock size={12} /> Awaiting</span>}
+                        {p.status === 'pending' && p.payment_proof && (
+                            <button className="btn btn-xs btn-primary" style={{ background: '#2A9D8F', borderColor: '#2A9D8F' }}
+                              onClick={() => setProofPayment(p)}>
+                              <CheckCircle size={12} /> Approve
+                            </button>
+                          )}
+                        {p.status === 'pending'  && !p.payment_proof && <span style={{ fontSize: 11, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: 4 }}><Clock size={12} /> Awaiting</span>}
                         {p.status === 'refunded' && <span style={{ fontSize: 11, color: '#7c3aed', display: 'flex', alignItems: 'center', gap: 4 }}><CheckCircle size={12} /> Refunded</span>}
                         {p.status === 'failed'   && <span style={{ fontSize: 11, color: '#e63946', display: 'flex', alignItems: 'center', gap: 4 }}><XCircle size={12} /> Failed</span>}
                       </div>
@@ -339,6 +447,7 @@ const AdminPayments = () => {
       </div>
 
       {slipId && <PaymentSlipModal paymentId={slipId} onClose={() => setSlipId(null)} />}
+      {proofPayment && <ProofModal payment={proofPayment} onClose={() => setProofPayment(null)} onApprove={() => { load(); loadStats(); }} />}
     </div>
   );
 };

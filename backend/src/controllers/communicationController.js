@@ -1,9 +1,45 @@
 const { query } = require('../config/db');
 const { paginate } = require('../utils/helpers');
+const { sendEmail } = require('../utils/email');
+
+// ─── Email helper ──────────────────────────────────────────
+const getUserEmail = async (user_id) => {
+  const r = await query('SELECT email, full_name FROM users WHERE user_id=$1', [user_id]);
+  return r.rows[0] || null;
+};
+
+const notificationEmail = (name, title, message) => ({
+  subject: `${title} — TWCE`,
+  html: `
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:10px">
+      <h2 style="color:#0077B6;margin-bottom:8px">${title}</h2>
+      <p style="color:#374151;font-size:15px">${message}</p>
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+      <p style="font-size:12px;color:#9ca3af">This is an automated notification from TWCE. <a href="${process.env.CLIENT_URL}/dashboard/notifications">View in dashboard</a></p>
+    </div>`,
+});
+
+const messageEmail = (senderName, content) => ({
+  subject: `New message from ${senderName} — TWCE`,
+  html: `
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:10px">
+      <h2 style="color:#0077B6;margin-bottom:8px">New Message</h2>
+      <p style="color:#6b7280;font-size:13px">From: <strong>${senderName}</strong></p>
+      <div style="background:#f8f9fa;border-radius:8px;padding:14px 18px;margin:12px 0;font-size:15px;color:#374151">${content}</div>
+      <a href="${process.env.CLIENT_URL}/dashboard/messages" style="display:inline-block;margin-top:12px;padding:10px 20px;background:#0077B6;color:#fff;border-radius:6px;text-decoration:none;font-size:14px">Reply in Dashboard</a>
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+      <p style="font-size:12px;color:#9ca3af">TWCE Messaging System</p>
+    </div>`,
+});
 
 // ─── Notify helper ─────────────────────────────────────────
-const notify = (user_id, title, message, type = 'general') =>
+const notify = async (user_id, title, message, type = 'general') => {
   query('INSERT INTO notifications (user_id, title, message, type) VALUES ($1,$2,$3,$4)', [user_id, title, message, type]).catch(() => {});
+  // Send email in background
+  getUserEmail(user_id).then(user => {
+    if (user?.email) sendEmail({ to: user.email, ...notificationEmail(user.full_name, title, message) }).catch(() => {});
+  }).catch(() => {});
+};
 
 module.exports.notify = notify;
 
@@ -117,6 +153,12 @@ const sendMessage = async (req, res, next) => {
       'INSERT INTO messages (sender_id, receiver_id, content) VALUES ($1,$2,$3) RETURNING *',
       [req.user.user_id, receiver_id, content]
     );
+    // Email the receiver
+    getUserEmail(receiver_id).then(receiver => {
+      if (receiver?.email) {
+        sendEmail({ to: receiver.email, ...messageEmail(req.user.full_name || 'Someone', content) }).catch(() => {});
+      }
+    }).catch(() => {});
     res.status(201).json(result.rows[0]);
   } catch (err) { next(err); }
 };

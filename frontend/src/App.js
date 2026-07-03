@@ -41,6 +41,7 @@ import Wishlist from './pages/dashboard/Wishlist';
 import Warranties from './pages/dashboard/Warranties';
 import Returns from './pages/dashboard/Returns';
 import Addresses from './pages/dashboard/Addresses';
+import PaymentCallback from './pages/PaymentCallback';
 import Products from './pages/Products';
 import ProductDetails from './pages/ProductDetails';
 import { useAuth } from './context/AuthContext';
@@ -94,6 +95,7 @@ const App = () => (
           <Route path="/" element={<Navigate to="/products" replace />} />
           <Route path="/products" element={<Products />} />
           <Route path="/products/:id" element={<ProductDetails />} />
+          <Route path="/payment/callback" element={<PaymentCallback />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />

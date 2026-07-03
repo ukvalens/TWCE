@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   ShoppingBag, DollarSign, Clock, CheckCircle, Truck, XCircle,
   Search, ChevronLeft, ChevronRight, Eye, X, MessageSquare,
-  MapPin, CreditCard, Package, AlertCircle,
+  MapPin, CreditCard, Package, AlertCircle, Image,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
@@ -242,6 +242,19 @@ const OrderDrawer = ({ orderId, onClose, onStatusChanged }) => {
               } />
               <Row label="Amount"  value={<strong>{formatPrice(order.pay_amount || order.total_amount)}</strong>} />
               {order.paid_at && <Row label="Paid at" value={formatDate(order.paid_at)} />}
+              {order.payment_proof && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Image size={12} /> Payment Proof
+                  </div>
+                  <img
+                    src={`http://localhost:5000/uploads/${order.payment_proof}`}
+                    alt="Payment proof"
+                    style={{ width: '100%', borderRadius: 8, border: '1px solid var(--border-color)', maxHeight: 260, objectFit: 'contain', cursor: 'pointer' }}
+                    onClick={() => window.open(`http://localhost:5000/uploads/${order.payment_proof}`, '_blank')}
+                  />
+                </div>
+              )}
             </Section>
 
             {/* Items */}
