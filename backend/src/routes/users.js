@@ -13,6 +13,7 @@ router.delete('/addresses/:id', authenticate, ctrl.deleteAddress);
 // Admin
 router.get('/', authenticate, isAdmin, ctrl.getAllUsers);
 router.post('/', authenticate, isAdmin, ctrl.createUser);
+router.put('/:id', authenticate, isAdmin, ctrl.updateUser);
 router.put('/:id/status', authenticate, isAdmin, ctrl.updateUserStatus);
 router.put('/:id/role', authenticate, isAdmin, ctrl.updateUserRole);
 router.delete('/:id', authenticate, isAdmin, ctrl.deleteUser);

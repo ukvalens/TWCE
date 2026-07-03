@@ -27,7 +27,6 @@ const menuByRole = {
     { label: 'Analytics',      path: 'analytics',      icon: <BarChart2 size={18} /> },
     { label: 'Audit Logs',     path: 'audit',          icon: <Shield size={18} /> },
     { label: 'Notifications',  path: 'notifications',  icon: <Bell size={18} /> },
-    { label: 'Roles',          path: 'roles',          icon: <KeyRound size={18} /> },
     { label: 'Settings',       path: 'settings',       icon: <Settings size={18} /> },
   ],
   [ROLES.VENDOR]: [

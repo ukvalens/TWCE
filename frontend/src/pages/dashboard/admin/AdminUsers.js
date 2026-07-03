@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Search, UserCheck, UserX, Shield, Trash2, X, UserPlus, KeyRound, Check } from 'lucide-react';
+import { Search, UserCheck, UserX, Shield, Trash2, X, UserPlus, KeyRound, Check, Pencil } from 'lucide-react';
 import api from '../../../utils/api';
 import { useAuth } from '../../../context/AuthContext';
 import { formatDate, statusBadge, getRoleName } from '../../../utils/helpers';
@@ -9,8 +9,8 @@ import toast from 'react-hot-toast';
 const ROLES = [
   { id: 1, name: 'Admin',    desc: 'Full system access — manage users, products, orders, settings' },
   { id: 2, name: 'Vendor',   desc: 'Manage own products, view orders, chat with customers' },
-  { id: 3, name: 'Customer', desc: 'Browse & purchase products, track orders, leave reviews' },
-  { id: 4, name: 'Support',  desc: 'Handle tickets, manage reviews, assist customers' },
+  { id: 3, name: 'Customer', desc: 'Browse & purchase products, track orders' },
+  { id: 4, name: 'Support',  desc: 'Handle tickets, assist customers' },
   { id: 5, name: 'Delivery', desc: 'View and update assigned delivery status' },
 ];
 
@@ -56,14 +56,12 @@ const AddUserModal = ({ onClose, onSave }) => {
           <button className="modal-close" onClick={onClose}><X size={18} /></button>
         </div>
         <div style={{ padding: '16px 24px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-
           <div>
             <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'block' }}>Role</label>
             <select className="form-control" value={form.role_id} onChange={e => set('role_id', parseInt(e.target.value))}>
               {ROLES.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
-
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'block' }}>Full Name *</label>
@@ -74,17 +72,14 @@ const AddUserModal = ({ onClose, onSave }) => {
               <input className="form-control" placeholder="+1 234 567 8900" value={form.phone} onChange={e => set('phone', e.target.value)} />
             </div>
           </div>
-
           <div>
             <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'block' }}>Email *</label>
             <input className="form-control" type="email" placeholder="user@example.com" value={form.email} onChange={e => set('email', e.target.value)} />
           </div>
-
           <div>
             <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'block' }}>Password *</label>
             <input className="form-control" type="password" placeholder="Min. 8 characters" value={form.password} onChange={e => set('password', e.target.value)} />
           </div>
-
           {isVendor && (
             <>
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, fontWeight: 700, fontSize: 13, color: ROLE_COLORS[2] }}>Vendor Details</div>
@@ -104,7 +99,6 @@ const AddUserModal = ({ onClose, onSave }) => {
               </div>
             </>
           )}
-
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
             <button className="btn btn-outline" onClick={onClose}>Cancel</button>
             <button className="btn btn-primary" onClick={save} disabled={saving}>
@@ -117,17 +111,67 @@ const AddUserModal = ({ onClose, onSave }) => {
   );
 };
 
+const EditUserModal = ({ user: u, onClose, onSave }) => {
+  const [form, setForm] = useState({ full_name: u.full_name, email: u.email, phone: u.phone || '' });
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    if (!form.full_name || !form.email) return toast.error('Name and email are required');
+    setSaving(true);
+    try {
+      await api.put(`/users/${u.user_id}`, form);
+      toast.success('User updated');
+      onSave();
+      onClose();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update user');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Edit User — {u.full_name}</h3>
+          <button className="modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div style={{ padding: '16px 24px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'block' }}>Full Name *</label>
+            <input className="form-control" value={form.full_name} onChange={e => set('full_name', e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'block' }}>Email *</label>
+            <input className="form-control" type="email" value={form.email} onChange={e => set('email', e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'block' }}>Phone</label>
+            <input className="form-control" placeholder="+1 234 567 8900" value={form.phone} onChange={e => set('phone', e.target.value)} />
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+            <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : <><Pencil size={14} /> Save Changes</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const RolesModal = ({ user: u, onClose, onSave }) => {
-  const [roleId, setRoleId]   = useState(u.role_id);
-  const [status, setStatus]   = useState(u.status);
-  const [saving, setSaving]   = useState(false);
+  const [roleId, setRoleId] = useState(u.role_id);
+  const [status, setStatus] = useState(u.status);
+  const [saving, setSaving] = useState(false);
 
   const save = async () => {
     setSaving(true);
     try {
       const ps = [];
-      if (roleId !== u.role_id)   ps.push(api.put(`/users/${u.user_id}/role`,   { role_id: roleId }));
-      if (status !== u.status)    ps.push(api.put(`/users/${u.user_id}/status`, { status }));
+      if (roleId !== u.role_id) ps.push(api.put(`/users/${u.user_id}/role`,   { role_id: roleId }));
+      if (status !== u.status)  ps.push(api.put(`/users/${u.user_id}/status`, { status }));
       await Promise.all(ps);
       toast.success('User updated');
       onSave();
@@ -144,8 +188,6 @@ const RolesModal = ({ user: u, onClose, onSave }) => {
           <button className="modal-close" onClick={onClose}><X size={18} /></button>
         </div>
         <div style={{ padding: '16px 24px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-          {/* Role selector */}
           <div>
             <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, display: 'block' }}>Assign Role</label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -166,8 +208,6 @@ const RolesModal = ({ user: u, onClose, onSave }) => {
               ))}
             </div>
           </div>
-
-          {/* Status */}
           <div>
             <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, display: 'block' }}>Account Status</label>
             <select className="form-control" value={status} onChange={e => setStatus(e.target.value)}>
@@ -176,7 +216,6 @@ const RolesModal = ({ user: u, onClose, onSave }) => {
               <option value="banned">Banned</option>
             </select>
           </div>
-
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             <button className="btn btn-outline" onClick={onClose}>Cancel</button>
             <button className="btn btn-primary" onClick={save} disabled={saving}>
@@ -205,6 +244,7 @@ const AdminUsers = () => {
   const [status, setStatus]     = useState('');
   const [loading, setLoading]   = useState(true);
   const [selected, setSelected] = useState(null);
+  const [editing, setEditing]   = useState(null);
   const [showAdd, setShowAdd]   = useState(false);
 
   const { user: me } = useAuth();
@@ -315,6 +355,10 @@ const AdminUsers = () => {
                     <td>{formatDate(u.created_at)}</td>
                     <td>
                       <div style={{ display: 'flex', gap: 6 }}>
+                        <button className="btn btn-sm" style={{ background: '#e8f4fd', color: '#0077B6', border: 'none' }}
+                          title="Edit user" onClick={() => setEditing(u)}>
+                          <Pencil size={13} />
+                        </button>
                         <button className="btn btn-sm" style={{ background: '#f3e8fd', color: '#7c3aed', border: 'none' }}
                           title="Roles & Permissions" onClick={() => setSelected(u)}>
                           <Shield size={13} />
@@ -343,9 +387,8 @@ const AdminUsers = () => {
       </div>
 
       {showAdd && <AddUserModal onClose={() => setShowAdd(false)} onSave={load} />}
-      {selected && (
-        <RolesModal user={selected} onClose={() => setSelected(null)} onSave={load} />
-      )}
+      {editing && <EditUserModal user={editing} onClose={() => setEditing(null)} onSave={load} />}
+      {selected && <RolesModal user={selected} onClose={() => setSelected(null)} onSave={load} />}
       </>}
     </div>
   );

@@ -171,6 +171,22 @@ const getAllUsers = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const updateUser = async (req, res, next) => {
+  try {
+    const { full_name, email, phone } = req.body;
+    const existing = await query('SELECT user_id FROM users WHERE email=$1 AND user_id!=$2', [email, req.params.id]);
+    if (existing.rows.length) return res.status(409).json({ message: 'Email already in use' });
+    const result = await query(
+      `UPDATE users SET full_name=COALESCE($1,full_name), email=COALESCE($2,email), phone=COALESCE($3,phone), updated_at=NOW()
+       WHERE user_id=$4 RETURNING user_id, full_name, email, phone, status, role_id`,
+      [full_name, email, phone || null, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ message: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) { next(err); }
+};
+
+
 const updateUserStatus = async (req, res, next) => {
   try {
     if (req.params.id === req.user.user_id)
@@ -200,4 +216,4 @@ const deleteUser = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getProfile, updateProfile, getAddresses, addAddress, updateAddress, deleteAddress, createUser, getAllUsers, updateUserStatus, updateUserRole, deleteUser };
+module.exports = { getProfile, updateProfile, getAddresses, addAddress, updateAddress, deleteAddress, createUser, getAllUsers, updateUser, updateUserStatus, updateUserRole, deleteUser };
